@@ -21,7 +21,6 @@ The application follows these steps to provide responses to your questions:
 
 
 # Project Setup
----
 
 # 🚀 LangChain Project Setup using `uv`
 
@@ -32,8 +31,6 @@ The setup follows **LangChain ≥1.x best practices** and is suitable for:
 - RAG systems
 - Agents (LangGraph)
 - FastAPI / Streamlit deployments
-
----
 
 ## ✅ Prerequisites
 
