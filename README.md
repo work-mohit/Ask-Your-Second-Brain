@@ -1,7 +1,6 @@
 # Ask-Your-Second-Brain
 Ask your second brain is a LLM based Q&amp;A application, built with the help of the Langchain framework.
 
-<<<<<<< HEAD
 
 # How it works 
 ---
@@ -21,8 +20,6 @@ The application follows these steps to provide responses to your questions:
 5. Response Generation: The selected chunks are passed to the language model, which generates a response based on the relevant content of the PDFs.
 
 
-=======
->>>>>>> 4a02f3886b064d299480fb851a5e4c1432d15689
 # Project Setup
 ---
 
