@@ -15,6 +15,8 @@ from langchain_community.vectorstores import FAISS
 import tempfile
 from pathlib import Path
 
+from footer import render_footer
+
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
@@ -42,7 +44,6 @@ def file_hash(uploaded_file) -> str:
     digest = hashlib.sha256(uploaded_file.read()).hexdigest()
     uploaded_file.seek(0)
     return digest
-
 
 
 def get_pdf_as_documents(uploaded_files):
@@ -207,88 +208,178 @@ def format_chat_history(history):
         lines.append(f"Assistant: {turn['answer']}")
     return "\n".join(lines)
 
+CONDENSE_PROMPT = PromptTemplate(
+    template="""Given the conversation history and a follow-up question, rewrite the
+follow-up question as a standalone question that contains all the context
+needed to search a document store on its own (resolve pronouns like "it" /
+"that" / "the second one" using the history). If the follow-up question is
+already standalone, or there is no history, return it unchanged. Output ONLY
+the rewritten question, nothing else.
+ 
+Chat History:
+{chat_history}
+ 
+Follow-up question: {question}
+Standalone question:""",
+    input_variables=["chat_history", "question"],
+)
+ 
+ANSWER_PROMPT = PromptTemplate(
+        template="""Answer the question as detailed as possible using ONLY the provided
+    context. Make sure to provide all relevant details. If the answer is not in
+    the provided context, just say "answer is not available in the context" --
+    don't make up information. When you use a fact, mention which numbered Source
+    it came from.
+    
+    Chat History (for continuity only, e.g. resolving pronouns):
+    {chat_history}
+    
+    Context:
+    {context}
+    
+    Question:
+    {question}
+    
+    Answer:""",
+        input_variables=["chat_history", "context", "question"],
+    )
+
+def condense_question(question, chat_history, model):
+    """
+    ENHANCEMENT (see changes.md #4): this is what actually makes multi-turn
+    chat work over a vector store. A raw follow-up like "what about its
+    limitations?" retrieves garbage on its own -- the vector search has no
+    idea what "its" refers to. We first rewrite the question into a
+    standalone form using the recent chat history, THEN retrieve with that.
+    """
+    if not chat_history:
+        return question
+    chain = CONDENSE_PROMPT | model | StrOutputParser()
+    return chain.invoke(
+        {"question": question, "chat_history": format_chat_history(chat_history)}
+    ).strip()
+
+
+def build_rag_chain(vector_store):
+
+    retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+    model = get_text_generation_model()
+
+    def run(question:str, chat_history:str):
+        standalone_question = condense_question(question, chat_history)
+        docs = retriever.invoke(standalone_question)
+        context = format_docs_with_sources(docs) 
+
+        answer_chain = ANSWER_PROMPT | model | StrOutputParser()
+
+        answer = answer_chain.invoke({
+            "context": context,
+            "chat_history": format_chat_history(chat_history),
+            "question": standalone_question
+        })
+
+        return {"answer": answer, "sources": docs}
+
+    return run
+
 
 def handle_user_question(question):
-    rag_chain = build_rag_chain()
-    answer = rag_chain.invoke(question)
+    vector_store = st.session_state.get("vector_store")
 
-    st.write("### 🤖 Reply")
-    st.write(answer)
+    if vector_store is None:
+        st.warning("Please upload and process at least one PDF first.")
+        return
 
+    rag_chain = build_rag_chain(vector_store)
 
+    result = rag_chain(question,st.session_state.chat_history)
 
-def build_rag_chain():
-    embeddings = get_embedding_model()
+    st.session_state.chat_history.append({"question": question, "answer": result["answer"]})
+    st.session_state.messages.append({"role": "user", "content": question})
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result["answer"],
+        "sources": result["sources"],
+    })
 
-    vector_store = FAISS.load_local(
-        "faiss_index",
-        embeddings,
-        allow_dangerous_deserialization=True
-    )
+# --- UI part 
 
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 4}
-    )
+def render_message(msg):
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+        if msg.get("sources"):
+            with st.expander("📎 Sources used"):
+                for i, doc in enumerate(msg["sources"], start=1):
+                    source = doc.metadata.get("source_file", "unknown")
+                    page = doc.metadata.get("page")
+                    page_label = page + 1 if isinstance(page, int) else "?"
+                    st.caption(f"Source {i}: {source} (page {page_label})")
+                    preview = doc.page_content[:300]
+                    st.text(preview + ("..." if len(doc.page_content) > 300 else ""))
 
-    prompt_template = """
-        Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
-    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
-    Context:\n {context}?\n
-    Question: \n{question}\n
-    """
-    model = get_text_generation_model() 
-
-    prompt = PromptTemplate(template = prompt_template, input_variables = ["context", "question"])
-
-    rag_chain = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough()
-        }
-        | prompt
-        | model
-        | StrOutputParser()
-    )
-
-    return rag_chain
 
 
 def main():
     st.header("Ask Your Second Brain!")
-    user_question = st.text_input("Ask a Question from the PDF Files uploaded..")
 
     with st.sidebar:
-        st.title("Uploads your files here..")
-
-        pdf_docs = st.file_uploader("Upload your PDF Files & \n Click on the Submit & Process Button ",type=["pdf"], accept_multiple_files=True)
-        os.makedirs(DOCS_PATH, exist_ok=True)
-
-        
+        # st.title("Upload your files here..")
+        pdf_docs = st.file_uploader(
+            "Upload your PDF files here..",
+            type=["pdf"], accept_multiple_files=True,
+        )
+        # below part of the code might need changes since I enabled the option to add more pdf to the context later in the chat  
         if st.button("Submit & Process"):
             if not pdf_docs:
                 st.warning("Please upload at least one PDF")
-                return
-            with st.spinner("Processing..."): # user friendly message.
-                docs = get_pdf_as_documents(pdf_docs) # get the pdf broken into document object
-                text_chunks = text_splitting(docs) # get the text chunks
-                create_vector_store(text_chunks) # create vector store
-                st.success("PDFs indexed successfully")
+            else:
+                with st.spinner("Processing..."):
+                    _, freshly_indexed = process_uploaded_pdfs(pdf_docs)
+                if freshly_indexed:
+                    st.success("PDFs indexed successfully")
+                else:
+                    st.info("These exact files are already indexed for this session -- skipped re-embedding.")
+        if st.session_state.get("index_meta"):
+            meta = st.session_state.index_meta
+            st.divider()
+            st.caption("📊 Index info")
+            st.caption(f"Files: {meta['num_files']} · Chunks: {meta['num_chunks']}")
+            st.caption(f"Embedding model: {meta['embedding_model']}")
+            st.caption(f"Indexed at: {meta['indexed_at']}")
+ 
+        st.divider()
+        if st.button("🗑️ Clear chat & index"):
+            for key in ("messages", "chat_history", "vector_store", "indexed_file_hashes", "index_meta"):
+                st.session_state.pop(key, None)
+            st.rerun()
+ 
+    for msg in st.session_state.messages:
+        render_message(msg)
 
-
-    if user_question:
-        handle_user_question(user_question)
-
+    has_index = st.session_state.get("vector_store") is not None
+    chat_placeholder = (
+        "Ask a question about your uploaded PDFs..."
+        if has_index
+        else "Upload and process a PDF in the sidebar first..."
+    )
+    
+    if user_question := st.chat_input(chat_placeholder, disabled=not has_index):
+        with st.spinner("Thinking..."):
+            handle_user_question(user_question)
+        st.rerun()
+ 
     st.write("---")
-
-    st.caption("AI App created by @ Mohit Joshi") 
-
-
+    # st.caption("AI App created by Mohit Joshi")
+    render_footer()
 
 
 if __name__ == "__main__":
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
     main()
 
 
