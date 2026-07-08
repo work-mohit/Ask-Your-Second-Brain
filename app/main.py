@@ -266,7 +266,7 @@ def build_rag_chain(vector_store):
     model = get_text_generation_model()
 
     def run(question:str, chat_history:str):
-        standalone_question = condense_question(question, chat_history)
+        standalone_question = condense_question(question, chat_history, model)
         docs = retriever.invoke(standalone_question)
         context = format_docs_with_sources(docs) 
 
@@ -362,7 +362,7 @@ def main():
         if has_index
         else "Upload and process a PDF in the sidebar first..."
     )
-    
+
     if user_question := st.chat_input(chat_placeholder, disabled=not has_index):
         with st.spinner("Thinking..."):
             handle_user_question(user_question)
