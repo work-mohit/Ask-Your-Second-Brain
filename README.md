@@ -157,6 +157,7 @@ Ask-Your-Second-Brain/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py
+|   ├── footer.py
 ├── .env
 ├── .venv/
 ├── pyproject.toml
