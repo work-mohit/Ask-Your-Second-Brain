@@ -325,7 +325,7 @@ def main():
     with st.sidebar:
         # st.title("Upload your files here..")
         pdf_docs = st.file_uploader(
-            "Upload your PDF files here..",
+            "Upload files...",
             type=["pdf"], accept_multiple_files=True,
         )
         # below part of the code might need changes since I enabled the option to add more pdf to the context later in the chat  
@@ -352,7 +352,9 @@ def main():
             for key in ("messages", "chat_history", "vector_store", "indexed_file_hashes", "index_meta"):
                 st.session_state.pop(key, None)
             st.rerun()
- 
+
+        render_footer()
+
     for msg in st.session_state.messages:
         render_message(msg)
 
@@ -369,8 +371,7 @@ def main():
         st.rerun()
  
     st.write("---")
-    # st.caption("AI App created by Mohit Joshi")
-    render_footer()
+    
 
 
 if __name__ == "__main__":
